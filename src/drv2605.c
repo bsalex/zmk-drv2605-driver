@@ -76,6 +76,101 @@ static int set_mode(const struct device *dev, uint8_t mode) {
     return 0;
 }
 
+static int calibrate(const struct device *dev) {
+    int ret;
+    uint8_t val;
+    int err = 0;
+    const struct drv2605_config *config = dev->config;
+
+    // 1) Put DRV2605 in standby or standby-mode
+    ret = i2c_reg_write_byte_dt(&config->i2c_bus, DRV2605_REG_MODE, DRV2605_MODE_STANDBY);
+    if (ret < 0) {
+        LOG_ERR("Failed to set STANDBY mode");
+        return ret;
+    }
+
+    uint8_t feedback_reg = 0;
+    err = i2c_burst_read_dt(&config->i2c_bus, DRV2605_REG_FEEDBACK, &feedback_reg, 1);
+    if (err) {
+        LOG_ERR("Failed to get FEEDBACK");
+        return err;
+    }
+
+    uint8_t feedback_reg_new = feedback_reg;
+
+    // Mask to clear bits 3-2 (binary 00001100)
+    uint8_t mask = 0b00001100;
+
+    // Decimal value 3 for bits 3-2 is binary 11 shifted to the correct position
+    uint8_t value = 0b00000011 << 2;
+
+    // Clear bits 3-2 and set them to the new value
+    feedback_reg_new = (feedback_reg_new & ~mask) | value;
+
+    // Mask to clear bits 6-4 (binary 01110000)
+    mask = 0b01110000;
+
+    // Decimal value 5 for bits 6-4 is binary 101 shifted to the correct position
+    value = 0b00000101 << 4;
+
+    // Clear bits 6-4 and set them to the new value
+    feedback_reg_new = (feedback_reg_new & ~mask) | value;
+
+    ret = i2c_reg_write_byte_dt(&config->i2c_bus, DRV2605_REG_FEEDBACK, feedback_reg_new);
+    if (ret < 0) {
+        LOG_ERR("Failed to set feedback control");
+        return ret;
+    }
+
+    err = i2c_burst_read_dt(&config->i2c_bus, DRV2605_REG_FEEDBACK, &feedback_reg, 1);
+    if (err) {
+        LOG_ERR("Failed to get FEEDBACK");
+        return err;
+    }
+    LOG_DBG("NEW Calibration FEEDBACK register: 0x%x", feedback_reg);
+
+    // 3) Set device into auto-calibration mode
+    ret = i2c_reg_write_byte_dt(&config->i2c_bus, DRV2605_REG_MODE, DRV2605_MODE_AUTOCAL);
+    if (ret < 0) {
+        LOG_ERR("Failed to set AUTO_CALIB mode");
+        return ret;
+    }
+
+    // 4) Trigger calibration by writing the GO bit
+    //    Usually, you write 0x01 to DRV2605_REG_GO.
+    //    Then the chip calibrates automatically.
+    ret = i2c_reg_write_byte_dt(&config->i2c_bus, DRV2605_REG_GO, 0x01);
+    if (ret < 0) {
+        LOG_ERR("Failed to start calibration (GO=1)");
+        return ret;
+    }
+
+    // 5) Poll until calibration completes.
+    //    The DRV2605 will clear the GO bit automatically.
+    do {
+        k_sleep(K_MSEC(50)); // Wait a bit
+        ret = i2c_burst_read_dt(&config->i2c_bus, DRV2605_REG_GO, &val, 1);
+        if (ret < 0) {
+            LOG_ERR("Failed to read GO register");
+            return ret;
+        }
+    } while (val & 0x01);
+
+    // 6) Calibration is done. You can read back auto-calibration results
+    //    (like registers 0x16-0x19) if needed, to store them or verify.
+    //    For example, you might read the auto-calibration compensation, back-EMF, etc.
+    LOG_INF("DRV2605 calibration complete!");
+
+    // (Optional) Switch to real run mode afterward.
+    // ret = i2c_reg_write_byte_dt(&config->i2c_bus, DRV2605_REG_MODE, DRV2605_MODE_ACTIVE);
+    // if (ret < 0) {
+    //    LOG_ERR("Failed to switch to ACTIVE mode");
+    //    return ret;
+    // }
+
+    return 0;
+}
+
 static int set_standby(const struct device *dev, bool standby) {
     struct drv2605_data *data = dev->data;
     const struct drv2605_config *config = dev->config;
@@ -177,6 +272,9 @@ static int set_use_lra(const struct device *dev, bool lra_mode) {
     LOG_DBG("");
     int err = 0;
 
+    i2c_reg_write_byte_dt(&config->i2c_bus, DRV2605_REG_RATEDV, 0x30);
+    i2c_reg_write_byte_dt(&config->i2c_bus, DRV2605_REG_CLAMPV, 0x50);
+
     LOG_DBG("Setting lra_mode to %s", lra_mode ? "true" : "false");
     // setup N_ERM_LRA bit
 
@@ -220,7 +318,7 @@ static int set_use_lra(const struct device *dev, bool lra_mode) {
     LOG_DBG("Reg CONTROL3: 0x%x", control3);
     uint8_t new_ctrl3 = feedback;
     if (lra_mode) {
-        new_ctrl3 = feedback | 0x05;
+        new_ctrl3 = feedback | 0x04;
     } else {
         new_ctrl3 = feedback | 0x20;
     }
@@ -319,7 +417,11 @@ static int drv2605_async_init_configure(const struct device *dev) {
         err = set_mode(dev, DRV2605_MODE_STANDBY);
         data->standby = true;
     }
-    
+
+    if (!err) {
+        err = calibrate(dev);
+    }
+
     if (err) {
         LOG_ERR("Config the sensor failed");
         return err;
@@ -420,7 +522,7 @@ static int drv2605_attr_set(const struct device *dev, enum sensor_channel chan,
 
     case DRV2605_ATTR_WAVEFORM:
         err = set_waveform(dev, DRV2605_SVALUE_TO_WAVEFORM_SLOT(*val),
-                                DRV2605_SVALUE_TO_WAVEFORM_EFFECT(*val));
+                           DRV2605_SVALUE_TO_WAVEFORM_EFFECT(*val));
         break;
 
     case DRV2605_ATTR_GO:
@@ -434,7 +536,7 @@ static int drv2605_attr_set(const struct device *dev, enum sensor_channel chan,
     case DRV2605_ATTR_MODE:
         err = set_mode(dev, DRV2605_SVALUE_TO_MODE(*val));
         break;
-    
+
     case DRV2605_ATTR_STANDBY_MODE:
         err = set_standby(dev, DRV2605_SVALUE_TO_BOOL(*val));
         break;
