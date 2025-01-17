@@ -16,3 +16,5 @@ properties:
   standby-ms:
     type: int
     default: 1000
+  rated_voltage:
+    type: int

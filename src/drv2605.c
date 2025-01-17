@@ -33,6 +33,7 @@ struct drv2605_data {
 /* device config data structure */
 struct drv2605_config {
     uint16_t library;
+    uint16_t rated_voltage;
     struct i2c_dt_spec i2c_bus;
     bool has_standby_ms;
     uint32_t standby_ms;
@@ -272,9 +273,6 @@ static int set_use_lra(const struct device *dev, bool lra_mode) {
     LOG_DBG("");
     int err = 0;
 
-    i2c_reg_write_byte_dt(&config->i2c_bus, DRV2605_REG_RATEDV, 0x30);
-    i2c_reg_write_byte_dt(&config->i2c_bus, DRV2605_REG_CLAMPV, 0x50);
-
     LOG_DBG("Setting lra_mode to %s", lra_mode ? "true" : "false");
     // setup N_ERM_LRA bit
 
@@ -336,6 +334,33 @@ static int set_use_lra(const struct device *dev, bool lra_mode) {
         return err;
     }
     LOG_DBG("Wrote CONTROL3: 0x%x", wrote_ctrl3);
+
+    return 0;
+}
+
+static int set_rated_voltage(const struct device *dev, uint16_t rated_voltage) {
+    const struct drv2605_config *config = dev->config;
+    LOG_DBG("");
+    int err = 0;
+
+    LOG_DBG("Setting RATEDV to 0x%x", rated_voltage);
+    err = i2c_reg_write_byte_dt(&config->i2c_bus, DRV2605_REG_RATEDV, rated_voltage);
+    if (err) {
+        LOG_ERR("Failed to set RATEDV");
+        return err;
+    }
+
+    uint16_t clamp_voltage = rated_voltage * 1.41;
+
+    LOG_DBG("Setting CLAMPV to 0x%x", rated_voltage);
+    err = i2c_reg_write_byte_dt(&config->i2c_bus, DRV2605_REG_CLAMPV, clamp_voltage);
+    if (err) {
+        LOG_ERR("Failed to set CLAMPV");
+        return err;
+    }
+
+    //i2c_reg_write_byte_dt(&config->i2c_bus, DRV2605_REG_RATEDV, 0x30);
+    //i2c_reg_write_byte_dt(&config->i2c_bus, DRV2605_REG_CLAMPV, 0x50);
 
     return 0;
 }
@@ -416,6 +441,10 @@ static int drv2605_async_init_configure(const struct device *dev) {
         // make it standby until set_go triggered
         err = set_mode(dev, DRV2605_MODE_STANDBY);
         data->standby = true;
+    }
+
+    if (!err) {
+        err = set_rated_voltage(dev, config->rated_voltage);
     }
 
     if (!err) {
@@ -562,6 +591,7 @@ static const struct sensor_driver_api drv2605_driver_api = {
         .standby_ms = COND_CODE_1(                                                  \
             DT_INST_NODE_HAS_PROP(n, standby_ms),                                   \
             (DT_INST_PROP(n, standby_ms)), (0)),                                    \
+        .rated_voltage = DT_PROP(DT_DRV_INST(n), rated_voltage),                    \
     };                                                                              \
     DEVICE_DT_INST_DEFINE(n, drv2605_init, NULL,                                    \
                           &data##n, &config##n, POST_KERNEL,                        \
