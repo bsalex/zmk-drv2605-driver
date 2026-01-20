@@ -1,7 +1,7 @@
 # Copyright (c) 2024 The ZMK Contributors
 # SPDX-License-Identifier: MIT
 
-DT_COMPAT_DRV2605 := ti,drv2605
+DT_COMPAT_DRV2605 := nonstandard,drv2605
 
 config DRV2605
   bool "DRV2605 haptic motor driver"

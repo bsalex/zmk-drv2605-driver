@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#define DT_DRV_COMPAT ti_drv2605
+#define DT_DRV_COMPAT nonstandard_drv2605
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
